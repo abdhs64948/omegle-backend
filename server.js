@@ -1,59 +1,71 @@
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
-const cors = require("cors");
 
 const app = express();
-app.use(cors());
-
 const server = http.createServer(app);
 
-const io = new Server(server, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"]
-  }
+// Port عالمي للعمل على Cloud Hosting
+const PORT = process.env.PORT || 3000;
+
+// Serve static files (HTML, CSS, JS)
+app.use(express.static("public"));
+
+// رسالة افتراضية عند زيارة الرابط الرئيسي
+app.get("/", (req, res) => {
+  res.sendFile(__dirname + "/public/index.html");
 });
+
+// إعداد Socket.IO
+const io = new Server(server);
 
 let waitingUser = null;
 
 io.on("connection", (socket) => {
-  console.log("User connected:", socket.id);
+  console.log(`✅ User connected: ${socket.id}`);
 
-  socket.on("findPartner", () => {
-    if (waitingUser) {
-      socket.partner = waitingUser;
-      waitingUser.partner = socket;
+  // إذا في مستخدم ينتظر، نربطه مع هذا المستخدم
+  if (waitingUser) {
+    const partner = waitingUser;
+    waitingUser = null;
 
-      socket.emit("matched");
-      waitingUser.emit("matched");
+    // إنشاء روم خاص بالمستخدمين الاثنين
+    const room = `${socket.id}#${partner.id}`;
+    socket.join(room);
+    partner.join(room);
 
-      waitingUser = null;
-    } else {
-      waitingUser = socket;
-      socket.emit("waiting");
-    }
-  });
+    socket.emit("connected", { room, partnerId: partner.id });
+    partner.emit("connected", { room, partnerId: socket.id });
 
-  socket.on("next", () => {
-    if (socket.partner) {
-      socket.partner.emit("partnerLeft");
-      socket.partner.partner = null;
-    }
-    socket.partner = null;
+    console.log(`🔗 Connected ${socket.id} with ${partner.id} in room ${room}`);
+  } else {
+    // إذا ما في حدا ينتظر، نخلي هذا المستخدم ينتظر
     waitingUser = socket;
     socket.emit("waiting");
+    console.log(`⏳ User ${socket.id} is waiting for a partner`);
+  }
+
+  // استقبال الرسائل أو الفيديو/SDP
+  socket.on("signal", ({ room, data }) => {
+    socket.to(room).emit("signal", { data, from: socket.id });
   });
 
+  // عند انفصال المستخدم
   socket.on("disconnect", () => {
-    if (waitingUser === socket) waitingUser = null;
-    if (socket.partner) {
-      socket.partner.emit("partnerLeft");
-      socket.partner.partner = null;
+    console.log(`❌ User disconnected: ${socket.id}`);
+
+    // إذا المستخدم كان ينتظر
+    if (waitingUser && waitingUser.id === socket.id) {
+      waitingUser = null;
+    } else {
+      // إخطار الشريك عند الانفصال
+      socket.rooms.forEach((room) => {
+        socket.to(room).emit("partnerDisconnected");
+      });
     }
   });
 });
 
-server.listen(3000, () => {
-  console.log("Server running on port 3000");
+server.listen(PORT, () => {
+  console.log(`🔥 Omegle backend is running on port ${PORT}`);
 });
